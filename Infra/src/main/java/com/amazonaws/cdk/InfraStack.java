@@ -4,6 +4,7 @@ import software.amazon.awscdk.Duration;
 import software.amazon.awscdk.RemovalPolicy;
 import software.amazon.awscdk.Stack;
 import software.amazon.awscdk.StackProps;
+import software.amazon.awscdk.services.dynamodb.*;
 import software.amazon.awscdk.services.iam.*;
 import software.amazon.awscdk.services.kms.Key;
 import software.amazon.awscdk.services.lambda.Architecture;
@@ -14,6 +15,8 @@ import software.amazon.awscdk.services.s3.BlockPublicAccess;
 import software.amazon.awscdk.services.s3.Bucket;
 import software.amazon.awscdk.services.s3.BucketEncryption;
 import software.amazon.awscdk.services.s3.notifications.LambdaDestination;
+import software.amazon.awscdk.services.ssm.ParameterDataType;
+import software.amazon.awscdk.services.ssm.StringParameter;
 import software.constructs.Construct;
 
 import java.util.List;
@@ -36,6 +39,25 @@ public class InfraStack extends Stack {
                 .removalPolicy(RemovalPolicy.DESTROY)
                 .build();
 
+        //Create SSM
+        StringParameter promptSSM = StringParameter.Builder.create(this, "BedrockIDP_Prompt_SSM")
+                .parameterName("BedrockIDP_Prompt_SSM")
+                .dataType(ParameterDataType.TEXT)
+                .stringValue("Prompt Template for Amazon Bedrock IDP")
+                .build();
+
+        //Create Bedrock Prompt Management
+//        CfnPrompt.Builder.create(this, "BedrockIDP_Prompt")
+//                .name("BedrockIDP_Prompt")
+//                .variants(List.of(
+//                        CfnPrompt.PromptVariantProperty.builder()
+//                                .name("PromptTemplate")
+//                                .templateConfiguration(CfnPrompt.PromptTemplateConfigurationProperty.builder()
+//                                        .chat()
+//                                        .build())
+//                                .build()
+//                ))
+//                .build();
 
         Bucket loggingBucket = Bucket.Builder.create(this, "LoggingBucket")
                 .enforceSsl(true)
@@ -85,6 +107,24 @@ public class InfraStack extends Stack {
                 .autoDeleteObjects(true)
                 .build();
 
+        // Create DynamoDB table to save the extracted information
+        TableProps tablePropsBedrockIDP = TableProps.builder()
+                .tableName("BedrockIDP-Table")
+                .partitionKey(Attribute.builder()
+                        .name("fileName")
+                        .type(AttributeType.STRING)
+                        .build())
+//                .sortKey(Attribute.builder()
+//                        .name("userLanguage")
+//                        .type(AttributeType.STRING)
+//                        .build())
+                .removalPolicy(RemovalPolicy.DESTROY)
+                .pointInTimeRecovery(true)
+                .encryption(TableEncryption.CUSTOMER_MANAGED)
+                .encryptionKey(sourceBucketKey)
+                .build();
+        Table tableBedrockIDP = new Table(this, "BedrockIDPTableDDB", tablePropsBedrockIDP);
+
 
         // Create an IAM role for the Lambda function
         Role lambdaRole = Role.Builder.create(this, "LambdaRole")
@@ -117,8 +157,13 @@ public class InfraStack extends Stack {
                 .timeout(Duration.minutes(5))
                 .code(Code.fromAsset("../assets/ExtractIDPFunction.jar"))
                 .environment(Map.of(
-                        "OUTPUT_BUCKET", destinationBucket.getBucketName(),
-                        "DEST_KEY_ID", destinationBucketKey.getKeyId()))
+                        "Output_S3_Bucket", destinationBucket.getBucketName(),
+                        "DEST_KEY_ID", destinationBucketKey.getKeyId(),
+                        "Source_S3_Bucket", sourceBucket.getBucketName(),
+                        "Model_ID", "anthropic.claude-3-5-sonnet-20240620-v1:0",
+                        "DynamoDB_Table_Name", tableBedrockIDP.getTableName(),
+                        "Extraction_Prompt", "Extract the following information from the document: Medical Record Number, Sample Collection Date (MM/DD/YYYY), Baby's Last Name, Baby's First Name"
+                ))
                 .role(lambdaRole)
                 .build();
 
@@ -126,8 +171,11 @@ public class InfraStack extends Stack {
         LambdaDestination lambdaDestination = new LambdaDestination(bedrockIDPFunction);
         sourceBucket.addObjectCreatedNotification(lambdaDestination);
 
+        // AWS Lambda Execution Permission
         sourceBucket.grantRead(bedrockIDPFunction);
         destinationBucket.grantWrite(bedrockIDPFunction);
+        tableBedrockIDP.grantReadWriteData(bedrockIDPFunction);
+        promptSSM.grantRead(bedrockIDPFunction);
 
         // Create a policy statement for CloudWatch Logs
         PolicyStatement logsStatement = PolicyStatement.Builder.create()
@@ -141,5 +189,6 @@ public class InfraStack extends Stack {
                         .statements(List.of(logsStatement))
                         .build())
                 .build());
+
     }
 }
