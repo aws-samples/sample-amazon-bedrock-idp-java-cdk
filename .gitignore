@@ -44,3 +44,5 @@ buildNumber.properties
 .classpath
 
 .idea
+repolinter_report.md
+*/.aws-sam
