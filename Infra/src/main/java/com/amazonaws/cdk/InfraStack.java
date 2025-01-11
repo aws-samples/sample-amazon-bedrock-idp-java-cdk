@@ -196,7 +196,7 @@ public class InfraStack extends Stack {
                 .build());
 
         try {
-            String bedrockIDP_ASL = Files.readString(Path.of("../StepFunction/IntakeProcess/AmazonConnectAgentlessOutboundCampaign-Intake.asl.json"));
+            String bedrockIDP_ASL = Files.readString(Path.of("../StepFunction/BedrockIDPStepFunction.json"));
             bedrockIDP_ASL = bedrockIDP_ASL.replace("<<BEDROCK-IDP-FUNCTION-NAME>>", bedrockIDPFunction.getFunctionArn());
             bedrockIDP_ASL = bedrockIDP_ASL.replace("<<SOURCE-S3-BUCKET-NAME>>", sourceBucket.getBucketName());
 
