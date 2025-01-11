@@ -1,0 +1,52 @@
+{
+  "QueryLanguage": "JSONata",
+  "Comment": "Bedrock IDP State Machine Process",
+  "StartAt": "S3 object keys",
+  "States": {
+    "S3 object keys": {
+      "Type": "Map",
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "DISTRIBUTED",
+          "ExecutionType": "STANDARD"
+        },
+        "StartAt": "Lambda Invoke",
+        "States": {
+          "Lambda Invoke": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Output": "{% $states.result.Payload %}",
+            "Arguments": {
+              "FunctionName": "<<BEDROCK-IDP-FUNCTION-NAME>>",
+              "Payload": "{% $states.input %}"
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException"
+                ],
+                "IntervalSeconds": 1,
+                "MaxAttempts": 3,
+                "BackoffRate": 2,
+                "JitterStrategy": "FULL"
+              }
+            ],
+            "End": true
+          }
+        }
+      },
+      "ItemReader": {
+        "Resource": "arn:aws:states:::s3:listObjectsV2",
+        "Arguments": {
+          "Bucket": "<<SOURCE-S3-BUCKET-NAME>>"
+        }
+      },
+      "MaxConcurrency": 1,
+      "Label": "S3objectkeys",
+      "End": true
+    }
+  }
+}

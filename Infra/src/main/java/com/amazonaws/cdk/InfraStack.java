@@ -1,9 +1,6 @@
 package com.amazonaws.cdk;
 
-import software.amazon.awscdk.Duration;
-import software.amazon.awscdk.RemovalPolicy;
-import software.amazon.awscdk.Stack;
-import software.amazon.awscdk.StackProps;
+import software.amazon.awscdk.*;
 import software.amazon.awscdk.services.dynamodb.*;
 import software.amazon.awscdk.services.iam.*;
 import software.amazon.awscdk.services.kms.Key;
@@ -11,14 +8,22 @@ import software.amazon.awscdk.services.lambda.Architecture;
 import software.amazon.awscdk.services.lambda.Code;
 import software.amazon.awscdk.services.lambda.Function;
 import software.amazon.awscdk.services.lambda.Runtime;
+import software.amazon.awscdk.services.logs.LogGroup;
 import software.amazon.awscdk.services.s3.BlockPublicAccess;
 import software.amazon.awscdk.services.s3.Bucket;
 import software.amazon.awscdk.services.s3.BucketEncryption;
 import software.amazon.awscdk.services.s3.notifications.LambdaDestination;
 import software.amazon.awscdk.services.ssm.ParameterDataType;
 import software.amazon.awscdk.services.ssm.StringParameter;
+import software.amazon.awscdk.services.stepfunctions.DefinitionBody;
+import software.amazon.awscdk.services.stepfunctions.LogLevel;
+import software.amazon.awscdk.services.stepfunctions.LogOptions;
+import software.amazon.awscdk.services.stepfunctions.StateMachine;
 import software.constructs.Construct;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 // import software.amazon.awscdk.Duration;
@@ -189,6 +194,54 @@ public class InfraStack extends Stack {
                         .statements(List.of(logsStatement))
                         .build())
                 .build());
+
+        try {
+            String bedrockIDP_ASL = Files.readString(Path.of("../StepFunction/IntakeProcess/AmazonConnectAgentlessOutboundCampaign-Intake.asl.json"));
+            bedrockIDP_ASL = bedrockIDP_ASL.replace("<<BEDROCK-IDP-FUNCTION-NAME>>", bedrockIDPFunction.getFunctionArn());
+            bedrockIDP_ASL = bedrockIDP_ASL.replace("<<SOURCE-S3-BUCKET-NAME>>", sourceBucket.getBucketName());
+
+            // Create a new IAM role for the state machine
+            Role stateMachineRoleBedrockIDP = Role.Builder.create(this, "stateMachineRoleBedrockIDP")
+                    .assumedBy(new ServicePrincipal("states.amazonaws.com"))
+                    .build();
+
+            StateMachine bedrockIDPStateMachine = StateMachine.Builder.create(this, "BedrockIDPStateMachine")
+                    .stateMachineName("BedrockIDPStateMachine")
+                    .definitionBody(DefinitionBody.fromString(bedrockIDP_ASL))
+                    .removalPolicy(RemovalPolicy.DESTROY)
+                    .logs(LogOptions.builder()
+                            .level(LogLevel.ALL)
+                            .destination(LogGroup.Builder.create(this, "BedrockIDPStateMachine-LogGroup")
+                                    .removalPolicy(RemovalPolicy.DESTROY)
+                                    .build())
+                            .includeExecutionData(true)
+                            .build())
+                    .role(stateMachineRoleBedrockIDP)
+                    .tracingEnabled(true)
+                    .build();
+
+            sourceBucket.grantRead(stateMachineRoleBedrockIDP);
+            bedrockIDPFunction.grantInvoke(stateMachineRoleBedrockIDP);
+
+            Policy intakeInlinePolicy = Policy.Builder.create(this, "BedrockIDPStateMachine-StepFunctionPolicy")
+                    .policyName("BedrockIDPStateMachine-StepFunctionPolicy")
+                    .statements(List.of(PolicyStatement.Builder.create()
+                            .actions(List.of("states:StartExecution", "states:DescribeExecution", "states:StopExecution"))
+                            .resources(List.of(bedrockIDPStateMachine.getStateMachineArn()))
+                            .build()))
+                    .build();
+
+            intakeInlinePolicy.attachToRole(stateMachineRoleBedrockIDP);
+
+            CfnOutput.Builder.create(this, "BedrockIDPStateMachine-Name")
+                    .description("AWS Step Function which process the S3 objects from source Bucket")
+                    .value(bedrockIDPStateMachine.getStateMachineName())
+                    .build();
+
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+
 
     }
 }
