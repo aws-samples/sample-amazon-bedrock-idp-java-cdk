@@ -1,5 +1,7 @@
 package com.amazonaws.cdk;
 
+import io.github.cdklabs.cdknag.NagPackSuppression;
+import io.github.cdklabs.cdknag.NagSuppressions;
 import software.amazon.awscdk.*;
 import software.amazon.awscdk.services.dynamodb.*;
 import software.amazon.awscdk.services.iam.*;
@@ -26,8 +28,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
-// import software.amazon.awscdk.Duration;
-// import software.amazon.awscdk.services.sqs.Queue;
 
 public class InfraStack extends Stack {
     public InfraStack(final Construct scope, final String id) {
@@ -38,7 +38,6 @@ public class InfraStack extends Stack {
         super(scope, id, props);
 
         Key loggingBucketKey = Key.Builder.create(this, "LoggingBucketKey")
-//                .alias("LoggingBucketKey")
                 .enableKeyRotation(true)
                 .pendingWindow(Duration.days(7))
                 .removalPolicy(RemovalPolicy.DESTROY)
@@ -75,7 +74,6 @@ public class InfraStack extends Stack {
                 .build();
 
         Key sourceBucketKey = Key.Builder.create(this, "SourceBucketKey")
-//                .alias("SourceBucketKey")
                 .enableKeyRotation(true)
                 .pendingWindow(Duration.days(7))
                 .removalPolicy(RemovalPolicy.DESTROY)
@@ -94,7 +92,6 @@ public class InfraStack extends Stack {
                 .build();
 
         Key destinationBucketKey = Key.Builder.create(this, "DestinationBucketKey")
-//                .alias("DestinationBucketKey")
                 .enableKeyRotation(true)
                 .pendingWindow(Duration.days(7))
                 .removalPolicy(RemovalPolicy.DESTROY)
@@ -119,10 +116,6 @@ public class InfraStack extends Stack {
                         .name("fileName")
                         .type(AttributeType.STRING)
                         .build())
-//                .sortKey(Attribute.builder()
-//                        .name("userLanguage")
-//                        .type(AttributeType.STRING)
-//                        .build())
                 .removalPolicy(RemovalPolicy.DESTROY)
                 .pointInTimeRecovery(true)
                 .encryption(TableEncryption.CUSTOMER_MANAGED)
@@ -143,11 +136,10 @@ public class InfraStack extends Stack {
                 .resources(List.of("arn:aws:logs:" + getRegion() + ":" + getAccount() + ":*"))
                 .build();
 
-
-        // Create a policy statement for Amazon Transcribe Logs
+        // Create a policy statement for Amazon Bedrock
         PolicyStatement bedrockStatement = PolicyStatement.Builder.create()
                 .effect(Effect.ALLOW)
-                .actions(List.of("bedrock:*"))
+                .actions(List.of("bedrock:InvokeModel"))
                 .resources(List.of("*"))
                 .build();
 
@@ -242,6 +234,22 @@ public class InfraStack extends Stack {
             throw new RuntimeException(e);
         }
 
+        //CDK NAG Suppression's
+        NagSuppressions.addResourceSuppressionsByPath(this, "/InfraStack/BucketNotificationsHandler050a0587b7544547bf325f094a3db834/Role/Resource",
+                List.of(NagPackSuppression.builder()
+                                .id("AwsSolutions-IAM4")
+                                .reason("Internal CDK lambda needed to apply bucket notification configurations")
+                                .appliesTo(List.of("Policy::arn:<AWS::Partition>:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"))
+                                .build(),
+                        NagPackSuppression.builder()
+                                .id("AwsSolutions-IAM5")
+                                .reason("Internal CDK lambda needed to apply bucket notification configurations")
+                                .appliesTo(List.of("Resource::*"))
+                                .build()));
 
+        NagSuppressions.addStackSuppressions(this, List.of(NagPackSuppression.builder()
+                .id("AwsSolutions-IAM5")
+                .reason("Lambda needs access to create Log group and put log events which require *. Resources have to be '*' to make sure all models are accessible for bedrock:Invoke.")
+                .build()));
     }
 }
