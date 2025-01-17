@@ -66,7 +66,7 @@ Before getting started, make sure you have the following:
 Clone this repository and navigate to the project directory.
 ```shell
 git clone https://<Repo-Url>.git
-cd amazon-bedrock-idp-java-cdk
+cd sample-amazon-bedrock-idp-java-cdk
 ```
 
 ## Build
