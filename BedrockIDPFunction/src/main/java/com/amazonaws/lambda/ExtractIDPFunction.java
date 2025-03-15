@@ -82,8 +82,16 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
 
 
         try {
-            eventJSONMap = objectMapper.readTree(objectMapper.writeValueAsString(event));
-            s3Key = eventJSONMap.path("Key").asText();
+            String eventString = objectMapper.writeValueAsString(event);
+            logger.log("Event = " + eventString);
+            eventJSONMap = objectMapper.readTree(eventString);
+            // If the Event is from S3, else its assumed it's from StepFunctions
+            if (eventJSONMap.has("Records")) {
+                s3Key = eventJSONMap.path("Records").get(0).path("s3").path("object").path("key").asText();
+            } else {
+                s3Key = eventJSONMap.path("Key").asText();
+            }
+            logger.log("S3 Key = " + s3Key);
         } catch (JsonProcessingException e) {
             throw new RuntimeException(e);
         }

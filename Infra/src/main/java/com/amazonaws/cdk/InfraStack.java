@@ -11,9 +11,7 @@ import software.amazon.awscdk.*;
 import software.amazon.awscdk.services.dynamodb.*;
 import software.amazon.awscdk.services.iam.*;
 import software.amazon.awscdk.services.kms.Key;
-import software.amazon.awscdk.services.lambda.Architecture;
-import software.amazon.awscdk.services.lambda.Code;
-import software.amazon.awscdk.services.lambda.Function;
+import software.amazon.awscdk.services.lambda.*;
 import software.amazon.awscdk.services.lambda.Runtime;
 import software.amazon.awscdk.services.logs.LogGroup;
 import software.amazon.awscdk.services.s3.BlockPublicAccess;
@@ -138,7 +136,7 @@ public class InfraStack extends Stack {
         PolicyStatement logGroupStatement = PolicyStatement.Builder.create()
                 .effect(Effect.ALLOW)
                 .actions(List.of("logs:CreateLogGroup"))
-                .resources(List.of("arn:aws:logs:" + getRegion() + ":" + getAccount() + ":*"))
+                .resources(List.of("arn:" + getPartition() + ":logs:" + getRegion() + ":" + getAccount() + ":*"))
                 .build();
 
         // Create a policy statement for Amazon Bedrock
@@ -183,8 +181,9 @@ public class InfraStack extends Stack {
         PolicyStatement logsStatement = PolicyStatement.Builder.create()
                 .effect(Effect.ALLOW)
                 .actions(List.of("logs:CreateLogStream", "logs:PutLogEvents"))
-                .resources(List.of("arn:aws:logs:" + getRegion() + ":" + getAccount() + ":log-group:/aws/lambda/" + bedrockIDPFunction.getFunctionName() + ":*"))
+                .resources(List.of("arn:" + getPartition() + ":logs:" + getRegion() + ":" + getAccount() + ":log-group:/aws/lambda/" + bedrockIDPFunction.getFunctionName() + ":*"))
                 .build();
+
 
         bedrockIDPFunction.getRole().attachInlinePolicy(Policy.Builder.create(this, "LogsPolicy")
                 .document(PolicyDocument.Builder.create()
@@ -196,6 +195,7 @@ public class InfraStack extends Stack {
             String bedrockIDP_ASL = Files.readString(Path.of("../StepFunction/BedrockIDPStepFunction.json"));
             bedrockIDP_ASL = bedrockIDP_ASL.replace("<<BEDROCK-IDP-FUNCTION-NAME>>", bedrockIDPFunction.getFunctionArn());
             bedrockIDP_ASL = bedrockIDP_ASL.replace("<<SOURCE-S3-BUCKET-NAME>>", sourceBucket.getBucketName());
+            bedrockIDP_ASL = bedrockIDP_ASL.replace("<<AWS-PARTITION>>", getPartition());
 
             // Create a new IAM role for the state machine
             Role stateMachineRoleBedrockIDP = Role.Builder.create(this, "stateMachineRoleBedrockIDP")
@@ -210,6 +210,7 @@ public class InfraStack extends Stack {
                             .level(LogLevel.ALL)
                             .destination(LogGroup.Builder.create(this, "BedrockIDPStateMachine-LogGroup")
                                     .removalPolicy(RemovalPolicy.DESTROY)
+                                    .logGroupName("/aws/vendedlogs/states/BedrockIDPStateMachine")
                                     .build())
                             .includeExecutionData(true)
                             .build())

@@ -9,6 +9,7 @@ import io.github.cdklabs.cdknag.AwsSolutionsChecks;
 import io.github.cdklabs.cdknag.NagPackProps;
 import software.amazon.awscdk.App;
 import software.amazon.awscdk.Aspects;
+import software.amazon.awscdk.Environment;
 import software.amazon.awscdk.StackProps;
 
 public class InfraApp {

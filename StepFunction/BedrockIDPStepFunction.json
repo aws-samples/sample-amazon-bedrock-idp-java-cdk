@@ -14,7 +14,7 @@
         "States": {
           "Lambda Invoke": {
             "Type": "Task",
-            "Resource": "arn:aws:states:::lambda:invoke",
+            "Resource": "arn:<<AWS-PARTITION>>:states:::lambda:invoke",
             "Output": "{% $states.result.Payload %}",
             "Arguments": {
               "FunctionName": "<<BEDROCK-IDP-FUNCTION-NAME>>",
@@ -39,7 +39,7 @@
         }
       },
       "ItemReader": {
-        "Resource": "arn:aws:states:::s3:listObjectsV2",
+        "Resource": "arn:<<AWS-PARTITION>>:states:::s3:listObjectsV2",
         "Arguments": {
           "Bucket": "<<SOURCE-S3-BUCKET-NAME>>"
         }
