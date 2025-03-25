@@ -17,7 +17,6 @@ import org.apache.commons.io.FilenameUtils;
 import software.amazon.awssdk.core.ResponseInputStream;
 import software.amazon.awssdk.core.SdkBytes;
 import software.amazon.awssdk.core.sync.RequestBody;
-import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.bedrockruntime.BedrockRuntimeClient;
 import software.amazon.awssdk.services.bedrockruntime.model.*;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
@@ -40,10 +39,10 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
     private static final ObjectMapper objectMapper = new ObjectMapper();
 
     // AWS Services Client
-    private final BedrockRuntimeClient bedrockRuntimeClient = BedrockRuntimeClient.builder().region(Region.US_WEST_2).build();
-    private final S3Client s3Client = S3Client.builder().region(Region.US_WEST_2).build();
-    private final DynamoDbClient dynamoDbClient = DynamoDbClient.builder().region(Region.US_WEST_2).build();
-    private final SsmClient ssmClient = SsmClient.builder().region(Region.US_WEST_2).build();
+    private final BedrockRuntimeClient bedrockRuntimeClient = BedrockRuntimeClient.builder().build();
+    private final S3Client s3Client = S3Client.builder().build();
+    private final DynamoDbClient dynamoDbClient = DynamoDbClient.builder().build();
+    private final SsmClient ssmClient = SsmClient.builder().build();
 
     // AWS Lambda Env Variables
     private final String modelID = Optional.ofNullable(System.getenv("Model_ID")).orElse("anthropic.claude-3-5-sonnet-20241022-v2:0");
