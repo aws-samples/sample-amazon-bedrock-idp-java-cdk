@@ -120,7 +120,9 @@ public class InfraStack extends Stack {
                         .type(AttributeType.STRING)
                         .build())
                 .removalPolicy(RemovalPolicy.DESTROY)
-                .pointInTimeRecovery(true)
+                .pointInTimeRecoverySpecification(PointInTimeRecoverySpecification.builder()
+                        .pointInTimeRecoveryEnabled(true)
+                        .build())
                 .encryption(TableEncryption.CUSTOMER_MANAGED)
                 .encryptionKey(sourceBucketKey)
                 .build();
@@ -162,7 +164,8 @@ public class InfraStack extends Stack {
                         "Source_S3_Bucket", sourceBucket.getBucketName(),
                         "Model_ID", "anthropic.claude-3-5-sonnet-20240620-v1:0",
                         "DynamoDB_Table_Name", tableBedrockIDP.getTableName(),
-                        "Extraction_Prompt", "Extract the following information from the document: Medical Record Number, Sample Collection Date (MM/DD/YYYY), Baby's Last Name, Baby's First Name"
+                        "Extraction_Prompt", "Extract the following information from the document: Medical Record Number, Sample Collection Date (MM/DD/YYYY), Baby's Last Name, Baby's First Name",
+                        "Max_Response_Token", "1000"
                 ))
                 .role(lambdaRole)
                 .build();

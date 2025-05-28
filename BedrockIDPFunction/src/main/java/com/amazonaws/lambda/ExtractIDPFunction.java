@@ -30,6 +30,8 @@ import software.amazon.awssdk.services.ssm.model.GetParameterRequest;
 import software.amazon.awssdk.services.ssm.model.GetParameterResponse;
 
 import java.io.IOException;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
@@ -49,6 +51,7 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
     private final String sourceS3Bucket = System.getenv("Source_S3_Bucket");
     private final String outputS3Bucket = System.getenv("Output_S3_Bucket");
     private final String dynamoDBTableName = System.getenv("DynamoDB_Table_Name");
+    private final String maxResponseToken = System.getenv("Max_Response_Token");
     private final Gson gson = new GsonBuilder().setPrettyPrinting()
             .create();
     private String defaultUserPrompt = "Extract the fields as JSON document, no other filler words, newline character are required in the output";
@@ -87,8 +90,10 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
             // If the Event is from S3, else its assumed it's from StepFunctions
             if (eventJSONMap.has("Records")) {
                 s3Key = eventJSONMap.path("Records").get(0).path("s3").path("object").path("key").asText();
+                s3Key = URLDecoder.decode(s3Key, StandardCharsets.UTF_8);
             } else {
                 s3Key = eventJSONMap.path("Key").asText();
+                s3Key = URLDecoder.decode(s3Key, StandardCharsets.UTF_8);
             }
             logger.log("S3 Key = " + s3Key);
         } catch (JsonProcessingException e) {
@@ -159,6 +164,11 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
                 .system(SystemContentBlock.builder()
                         .text(defaultSystemPrompt)
                         .build())
+                .inferenceConfig(InferenceConfiguration.builder()
+                                                       .maxTokens(Integer.valueOf(maxResponseToken))
+                                                       .temperature(0f)
+                                                       .topP(0f)
+                                                       .build())
                 .build();
 
         ConverseResponse converseResponse = bedrockRuntimeClient.converse(converseRequest);

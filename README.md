@@ -21,11 +21,6 @@ Below are the services that are required for deploying the solution.
 Before getting started, make sure you have the following:
 
 - AWS Account
-- Docker installed on your local machine
-    - Docker version 27 or later. If missing install Docker from [here](https://docs.docker.com/engine/install/).
-      ```shell
-      docker --version
-      ```
 - Java Development Kit (JDK) installed on your local machine
     - Java 21 or later. If missing install Amazon Corretto Java 21 from [here](https://docs.aws.amazon.com/corretto/latest/corretto-21-ug/what-is-corretto-21.html).
       ```shell
