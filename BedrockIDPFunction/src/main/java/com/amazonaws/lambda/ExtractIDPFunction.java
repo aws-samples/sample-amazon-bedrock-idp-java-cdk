@@ -17,6 +17,7 @@ import org.apache.commons.io.FilenameUtils;
 import software.amazon.awssdk.core.ResponseInputStream;
 import software.amazon.awssdk.core.SdkBytes;
 import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.http.apache.ApacheHttpClient;
 import software.amazon.awssdk.services.bedrockruntime.BedrockRuntimeClient;
 import software.amazon.awssdk.services.bedrockruntime.model.*;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
@@ -32,6 +33,7 @@ import software.amazon.awssdk.services.ssm.model.GetParameterResponse;
 import java.io.IOException;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
@@ -41,7 +43,11 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
     private static final ObjectMapper objectMapper = new ObjectMapper();
 
     // AWS Services Client
-    private final BedrockRuntimeClient bedrockRuntimeClient = BedrockRuntimeClient.builder().build();
+    private final BedrockRuntimeClient bedrockRuntimeClient = BedrockRuntimeClient.builder()
+                                                                                  .httpClientBuilder(ApacheHttpClient.builder()
+                                                                                                                     .connectionTimeout(Duration.ofSeconds(30))
+                                                                                                                     .socketTimeout(Duration.ofMinutes(5)))
+                                                                                  .build();
     private final S3Client s3Client = S3Client.builder().build();
     private final DynamoDbClient dynamoDbClient = DynamoDbClient.builder().build();
     private final SsmClient ssmClient = SsmClient.builder().build();
