@@ -46,7 +46,7 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
     private final BedrockRuntimeClient bedrockRuntimeClient = BedrockRuntimeClient.builder()
                                                                                   .httpClientBuilder(ApacheHttpClient.builder()
                                                                                                                      .connectionTimeout(Duration.ofSeconds(30))
-                                                                                                                     .socketTimeout(Duration.ofMinutes(5)))
+                                                                                                                     .socketTimeout(Duration.ofMinutes(10)))
                                                                                   .build();
     private final S3Client s3Client = S3Client.builder().build();
     private final DynamoDbClient dynamoDbClient = DynamoDbClient.builder().build();
