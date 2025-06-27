@@ -88,6 +88,12 @@
             <version>2.18.1</version>
             <scope>compile</scope>
         </dependency>
+        <!-- Package Vulnerability Fix -->
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-core</artifactId>
+            <version>2.25.0</version>
+        </dependency>
     </dependencies>
 
     <dependencyManagement>
@@ -95,7 +101,7 @@
             <dependency>
                 <groupId>software.amazon.awssdk</groupId>
                 <artifactId>bom</artifactId>
-                <version>2.31.58</version>
+                <version>2.31.67</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
