@@ -14,6 +14,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import org.apache.commons.io.FilenameUtils;
+import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.cos.COSName;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.PDResources;
+import org.apache.pdfbox.pdmodel.graphics.PDXObject;
+import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject;
 import software.amazon.awssdk.core.ResponseInputStream;
 import software.amazon.awssdk.core.SdkBytes;
 import software.amazon.awssdk.core.sync.RequestBody;
@@ -30,6 +37,9 @@ import software.amazon.awssdk.services.ssm.SsmClient;
 import software.amazon.awssdk.services.ssm.model.GetParameterRequest;
 import software.amazon.awssdk.services.ssm.model.GetParameterResponse;
 
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
@@ -62,6 +72,42 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
             .create();
     private String defaultUserPrompt = "Extract the fields as JSON document, no other filler words, newline character are required in the output";
     private String defaultSystemPrompt = "Your response should be in JSON format.\\n Do not include any explanations, only provide a RFC8259 compliant JSON response without deviation.\\n Do not include markdown code blocks in your response.\\n";
+
+    private String sanitizeDocumentName(String name) {
+        return name.replaceAll("[^a-zA-Z0-9\\s\\-()\\[\\]]", "")
+                   .replaceAll("\\s+", " ")
+                   .trim();
+    }
+
+    /**
+     * Extracts the first image from a PDF document as PNG bytes.
+     *
+     * @param pdfBytes The PDF document as a byte array
+     * @return byte array of the first image as PNG, or null if no images found
+     */
+    private byte[] extractFirstImageFromPdf(byte[] pdfBytes) {
+        try (PDDocument document = Loader.loadPDF(pdfBytes)) {
+            for (PDPage page : document.getPages()) {
+                PDResources resources = page.getResources();
+                if (resources == null) continue;
+                
+                for (COSName name : resources.getXObjectNames()) {
+                    PDXObject xObject = resources.getXObject(name);
+                    if (xObject instanceof PDImageXObject) {
+                        PDImageXObject image = (PDImageXObject) xObject;
+                        BufferedImage bufferedImage = image.getImage();
+                        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                        ImageIO.write(bufferedImage, "PNG", baos);
+                        return baos.toByteArray();
+                    }
+                }
+            }
+            return null; // No images found
+        } catch (IOException e) {
+            System.err.println("Error extracting image from PDF: " + e.getMessage());
+            return null;
+        }
+    }
 
     @Override
     public String handleRequest(Object event, Context context) {
@@ -125,6 +171,19 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
         logger.log("Document Type = " + document);
         logger.log("\n");
 
+        // Check whether it's a PDF document and whether it contains images
+        boolean isPdf = s3ContentType.contains("pdf");
+        boolean containsImages = false; // Will be used later when storing to DynamoDB
+        byte[] extractedImageBytes = null; // Store extracted image bytes for later use
+
+        if (isPdf) {
+            byte[] pdfBytes = s3SDKBytes.asByteArray();
+            extractedImageBytes = extractFirstImageFromPdf(pdfBytes);
+            containsImages = extractedImageBytes != null;
+            logger.log("PDF Contains Images = " + containsImages);
+            logger.log("\n");
+        }
+
         boolean image = Arrays.stream(ImageFormat.values()).anyMatch(it -> s3ContentType.contains(it.name().toLowerCase()));
         logger.log("Image Type= " + image);
         logger.log("\n");
@@ -135,9 +194,21 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
             return "Unsupported Content Type";
         }
 
-        String baseName = FilenameUtils.getBaseName(s3Key);
+        String baseName = sanitizeDocumentName(FilenameUtils.getBaseName(s3Key));
         ContentBlock contentBlock;
-        if (document) {
+        
+        // If it's a PDF with images, use the extracted image instead of the document
+        if (isPdf && containsImages) {
+            logger.log("Using extracted image from PDF");
+            contentBlock = ContentBlock.builder()
+                    .image(ImageBlock.builder()
+                            .format(ImageFormat.PNG)
+                            .source(ImageSource.builder()
+                                    .bytes(SdkBytes.fromByteArray(extractedImageBytes))
+                                    .build())
+                            .build())
+                    .build();
+        } else if (document) {
             contentBlock = ContentBlock.builder()
                     .document(DocumentBlock.builder()
                             .name(baseName)
@@ -201,6 +272,18 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
             finalMap.put("fileName", AttributeValue.builder()
                     .s(s3Key.trim())
                     .build());
+
+            // Add PDF and image detection information
+            if (s3ContentType.contains("pdf")) {
+                finalMap.put("isPdf", AttributeValue.builder().bool(true).build());
+                finalMap.put("containsImages", AttributeValue.builder().bool(containsImages).build());
+                
+                // Record if we used an extracted image for processing
+                boolean usedExtractedImage = isPdf && containsImages && extractedImageBytes != null;
+                finalMap.put("usedExtractedImage", AttributeValue.builder().bool(usedExtractedImage).build());
+            } else {
+                finalMap.put("isPdf", AttributeValue.builder().bool(false).build());
+            }
 
             map.forEach((key, value) -> finalMap.put(key, AttributeValue.builder()
                     .s(value != null ? value.toString() : "no data")
