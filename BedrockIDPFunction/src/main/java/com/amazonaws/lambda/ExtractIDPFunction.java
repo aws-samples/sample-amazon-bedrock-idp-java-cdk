@@ -119,24 +119,18 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
         int width = image.getWidth();
         int height = image.getHeight();
         int totalPixels = width * height;
-        
-        // Logo characteristics: typically smaller, square-ish aspect ratio
         double aspectRatio = (double) width / height;
-        boolean isSmall = totalPixels < 100000; // Less than 100k pixels
-        boolean isSquareish = aspectRatio > 0.5 && aspectRatio < 2.0;
         
-        // Scanned document characteristics: typically larger, rectangular
-        boolean isLarge = totalPixels > 300000; // More than 300k pixels
-        boolean isRectangular = aspectRatio > 1.2 || aspectRatio < 0.8;
+        // Scanned document characteristics: very large images with document-like aspect ratios
+        boolean isVeryLarge = totalPixels > 1000000; // More than 1M pixels (e.g., 1200x800+)
+        boolean isDocumentRatio = (aspectRatio > 1.3 && aspectRatio < 1.6) || (aspectRatio > 0.6 && aspectRatio < 0.8); // A4-like ratios
         
-        if (isSmall && isSquareish) {
-            return "logo";
-        } else if (isLarge && isRectangular) {
+        // Logo characteristics: everything else, including medium-sized images
+        if (isVeryLarge && isDocumentRatio) {
             return "scanned_document";
         }
         
-        // Default classification based on size
-        return totalPixels < 200000 ? "logo" : "scanned_document";
+        return "logo";
     }
 
     /**
