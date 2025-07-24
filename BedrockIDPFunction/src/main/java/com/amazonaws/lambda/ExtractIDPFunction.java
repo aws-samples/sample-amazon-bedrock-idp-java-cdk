@@ -140,6 +140,14 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
     }
 
     /**
+     * Validates if image bytes are valid and not corrupted
+     */
+    private boolean isValidImage(byte[] imageBytes) {
+        if (imageBytes == null || imageBytes.length < 10) return false;
+        return true; // Simplified validation - let Bedrock handle format validation
+    }
+
+    /**
      * Extracts and classifies images from a PDF document
      *
      * @param pdfBytes The PDF document as a byte array
@@ -156,19 +164,28 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
                     PDXObject xObject = resources.getXObject(name);
                     if (xObject instanceof PDImageXObject) {
                         PDImageXObject image = (PDImageXObject) xObject;
-                        BufferedImage bufferedImage = image.getImage();
-                        
-                        String imageType = classifyImage(bufferedImage);
-                        
-                        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                        ImageIO.write(bufferedImage, "JPEG", baos);
-                        
-                        images.add(new ClassifiedImage(
-                            baos.toByteArray(), 
-                            imageType,
-                            bufferedImage.getWidth(),
-                            bufferedImage.getHeight()
-                        ));
+                        try {
+                            BufferedImage bufferedImage = image.getImage();
+                            if (bufferedImage == null) continue;
+                            
+                            String imageType = classifyImage(bufferedImage);
+                            
+                            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                            ImageIO.write(bufferedImage, "JPEG", baos);
+                            byte[] imageBytes = baos.toByteArray();
+                            
+                            // Validate image before adding
+                            if (isValidImage(imageBytes)) {
+                                images.add(new ClassifiedImage(
+                                    imageBytes, 
+                                    imageType,
+                                    bufferedImage.getWidth(),
+                                    bufferedImage.getHeight()
+                                ));
+                            }
+                        } catch (Exception e) {
+                            System.err.println("Error processing image: " + e.getMessage());
+                        }
                     }
                 }
             }
@@ -411,8 +428,27 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
             ConverseResponse converseResponse = bedrockRuntimeClient.converse(converseRequest);
             response = converseResponse.output().message().content().getFirst().text();
             
-        } else {
-            // Process single image normally
+        } else if (image && !isPdf) {
+            // Process single image normally (only for non-PDF images)
+            logger.log("Processing single image");
+            logger.log("\n");
+            
+            // Detect image format from content type
+            ImageFormat imageFormat = ImageFormat.JPEG; // default
+            if (s3ContentType.contains("png")) {
+                imageFormat = ImageFormat.PNG;
+            } else if (s3ContentType.contains("gif")) {
+                imageFormat = ImageFormat.GIF;
+            } else if (s3ContentType.contains("webp")) {
+                imageFormat = ImageFormat.WEBP;
+            }
+            
+            // Log image info for debugging
+            byte[] imageData = s3SDKBytes.asByteArray();
+            logger.log("Image size: " + imageData.length + " bytes");
+            logger.log("Content type: " + s3ContentType);
+            logger.log("Detected format: " + imageFormat);
+            
             List<ContentBlock> contentBlocks = new ArrayList<>();
             
             // Add text content block
@@ -423,7 +459,7 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
             // Add image content block
             contentBlocks.add(ContentBlock.builder()
                     .image(ImageBlock.builder()
-                            .format(ImageFormat.JPEG)
+                            .format(imageFormat)
                             .source(ImageSource.builder()
                                     .bytes(s3SDKBytes)
                                     .build())
