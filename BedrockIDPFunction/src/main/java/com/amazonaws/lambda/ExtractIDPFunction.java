@@ -91,13 +91,62 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
 
 
     /**
-     * Extracts all images from a PDF document as JPEG bytes.
+     * Represents an extracted image with its classification
+     */
+    private static class ClassifiedImage {
+        private final byte[] imageBytes;
+        private final String imageType;
+        private final int width;
+        private final int height;
+        
+        public ClassifiedImage(byte[] imageBytes, String imageType, int width, int height) {
+            this.imageBytes = imageBytes;
+            this.imageType = imageType;
+            this.width = width;
+            this.height = height;
+        }
+        
+        public byte[] getImageBytes() { return imageBytes; }
+        public String getImageType() { return imageType; }
+        public int getWidth() { return width; }
+        public int getHeight() { return height; }
+    }
+
+    /**
+     * Classifies an image as either "logo" or "scanned_document" based on characteristics
+     */
+    private String classifyImage(BufferedImage image) {
+        int width = image.getWidth();
+        int height = image.getHeight();
+        int totalPixels = width * height;
+        
+        // Logo characteristics: typically smaller, square-ish aspect ratio
+        double aspectRatio = (double) width / height;
+        boolean isSmall = totalPixels < 100000; // Less than 100k pixels
+        boolean isSquareish = aspectRatio > 0.5 && aspectRatio < 2.0;
+        
+        // Scanned document characteristics: typically larger, rectangular
+        boolean isLarge = totalPixels > 300000; // More than 300k pixels
+        boolean isRectangular = aspectRatio > 1.2 || aspectRatio < 0.8;
+        
+        if (isSmall && isSquareish) {
+            return "logo";
+        } else if (isLarge && isRectangular) {
+            return "scanned_document";
+        }
+        
+        // Default classification based on size
+        return totalPixels < 200000 ? "logo" : "scanned_document";
+    }
+
+    /**
+     * Extracts and classifies images from a PDF document
      *
      * @param pdfBytes The PDF document as a byte array
-     * @return List of byte arrays containing images as JPEG, or empty list if no images found
+     * @return List of ClassifiedImage objects, or empty list if no images found
      */
-    private List<byte[]> extractImagesFromPdf(byte[] pdfBytes) {
-        List<byte[]> images = new ArrayList<>();
+    private List<ClassifiedImage> extractAndClassifyImagesFromPdf(byte[] pdfBytes) {
+        List<ClassifiedImage> images = new ArrayList<>();
         try (PDDocument document = Loader.loadPDF(pdfBytes)) {
             for (PDPage page : document.getPages()) {
                 PDResources resources = page.getResources();
@@ -108,9 +157,18 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
                     if (xObject instanceof PDImageXObject) {
                         PDImageXObject image = (PDImageXObject) xObject;
                         BufferedImage bufferedImage = image.getImage();
+                        
+                        String imageType = classifyImage(bufferedImage);
+                        
                         ByteArrayOutputStream baos = new ByteArrayOutputStream();
                         ImageIO.write(bufferedImage, "JPEG", baos);
-                        images.add(baos.toByteArray());
+                        
+                        images.add(new ClassifiedImage(
+                            baos.toByteArray(), 
+                            imageType,
+                            bufferedImage.getWidth(),
+                            bufferedImage.getHeight()
+                        ));
                     }
                 }
             }
@@ -118,6 +176,19 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
             System.err.println("Error extracting images from PDF: " + e.getMessage());
         }
         return images;
+    }
+
+    /**
+     * Extracts all images from a PDF document as JPEG bytes (legacy method)
+     *
+     * @param pdfBytes The PDF document as a byte array
+     * @return List of byte arrays containing images as JPEG, or empty list if no images found
+     */
+    private List<byte[]> extractImagesFromPdf(byte[] pdfBytes) {
+        List<ClassifiedImage> classifiedImages = extractAndClassifyImagesFromPdf(pdfBytes);
+        return classifiedImages.stream()
+                .map(ClassifiedImage::getImageBytes)
+                .collect(ArrayList::new, ArrayList::add, ArrayList::addAll);
     }
 
     /**
@@ -194,15 +265,27 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
 
         // Check whether it's a PDF document and whether it contains images
         boolean isPdf = s3ContentType.contains("pdf");
-        boolean containsImages = false; // Will be used later when storing to DynamoDB
-        List<byte[]> extractedImages = new ArrayList<>(); // Store extracted image bytes for later use
-
+        boolean containsImages = false;
+        List<byte[]> extractedImages = new ArrayList<>();
+        List<ClassifiedImage> classifiedImages = new ArrayList<>();
+        
         if (isPdf) {
             byte[] pdfBytes = s3SDKBytes.asByteArray();
-            extractedImages = extractImagesFromPdf(pdfBytes);
+            classifiedImages = extractAndClassifyImagesFromPdf(pdfBytes);
+            extractedImages = classifiedImages.stream()
+                    .map(ClassifiedImage::getImageBytes)
+                    .collect(ArrayList::new, ArrayList::add, ArrayList::addAll);
             containsImages = !extractedImages.isEmpty();
+            
             logger.log("PDF Contains Images = " + containsImages);
             logger.log("Number of images found: " + extractedImages.size());
+            
+            // Log image classifications
+            for (int i = 0; i < classifiedImages.size(); i++) {
+                ClassifiedImage img = classifiedImages.get(i);
+                logger.log("Image " + (i+1) + ": Type=" + img.getImageType() + 
+                          ", Size=" + img.getWidth() + "x" + img.getHeight());
+            }
             logger.log("\n");
         }
 
@@ -220,59 +303,76 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
         
         // Process based on content type
         if (isPdf && containsImages) {
-            logger.log("Processing PDF with images in a single request");
+            // Filter to process only scanned document images, skip logos
+            List<ClassifiedImage> documentsOnly = classifiedImages.stream()
+                    .filter(img -> "scanned_document".equals(img.getImageType()))
+                    .collect(ArrayList::new, ArrayList::add, ArrayList::addAll);
+            
+            if (documentsOnly.isEmpty()) {
+                logger.log("PDF contains only logo images, processing as regular PDF document");
+                logger.log("\n");
+                // Process as document - fall through to document processing block
+            } else {
+                logger.log("Processing PDF with " + documentsOnly.size() + " scanned document images (skipping " + 
+                          (classifiedImages.size() - documentsOnly.size()) + " logo images)");
+                logger.log("\n");
+                
+                // Create content blocks with document images only
+                List<ContentBlock> contentBlocks = new ArrayList<>();
+                
+                // Add text content block first
+                contentBlocks.add(ContentBlock.builder()
+                        .text(defaultUserPrompt)
+                        .build());
+                
+                // Add each document image as a separate content block
+                for (ClassifiedImage classifiedImg : documentsOnly) {
+                    contentBlocks.add(ContentBlock.builder()
+                            .image(ImageBlock.builder()
+                                    .format(ImageFormat.JPEG)
+                                    .source(ImageSource.builder()
+                                            .bytes(SdkBytes.fromByteArray(classifiedImg.getImageBytes()))
+                                            .build())
+                                    .build())
+                            .build());
+                }
+            
+                // Create and send the request with all images
+                ConverseRequest converseRequest = ConverseRequest.builder()
+                        .modelId(modelID)
+                        .messages(
+                                Message.builder()
+                                        .role(ConversationRole.USER)
+                                        .content(contentBlocks.toArray(new ContentBlock[0]))
+                                        .build())
+                        .system(SystemContentBlock.builder()
+                                .text(defaultSystemPrompt)
+                                .build())
+                        .inferenceConfig(InferenceConfiguration.builder()
+                                        .maxTokens(Integer.valueOf(maxResponseToken))
+                                        .temperature(0f)
+                                        .topP(0f)
+                                        .build())
+                        .build();
+                
+                try {
+                    ConverseResponse converseResponse = bedrockRuntimeClient.converse(converseRequest);
+                    response = converseResponse.output().message().content().getFirst().text();
+                    logger.log("Processed " + documentsOnly.size() + " document images in a single request");
+                } catch (Exception e) {
+                    logger.log("Error processing images with Bedrock: " + e.getMessage());
+                    response = "{}";
+                }
+            }
+            
+        }
+        
+        if ((document && !isPdf) || (isPdf && !containsImages) || 
+            (isPdf && containsImages && classifiedImages.stream().allMatch(img -> "logo".equals(img.getImageType())))) {
+            // Process document normally
+            logger.log("Processing as document");
             logger.log("\n");
             
-            // Create content blocks with all images
-            List<ContentBlock> contentBlocks = new ArrayList<>();
-            
-            // Add text content block first
-            contentBlocks.add(ContentBlock.builder()
-                    .text(defaultUserPrompt)
-                    .build());
-            
-            // Add each image as a separate content block
-            for (int i = 0; i < extractedImages.size(); i++) {
-                byte[] imageBytes = extractedImages.get(i);
-                contentBlocks.add(ContentBlock.builder()
-                        .image(ImageBlock.builder()
-                                .format(ImageFormat.JPEG)
-                                .source(ImageSource.builder()
-                                        .bytes(SdkBytes.fromByteArray(imageBytes))
-                                        .build())
-                                .build())
-                        .build());
-            }
-            
-            // Create and send the request with all images
-            ConverseRequest converseRequest = ConverseRequest.builder()
-                    .modelId(modelID)
-                    .messages(
-                            Message.builder()
-                                    .role(ConversationRole.USER)
-                                    .content(contentBlocks.toArray(new ContentBlock[0]))
-                                    .build())
-                    .system(SystemContentBlock.builder()
-                            .text(defaultSystemPrompt)
-                            .build())
-                    .inferenceConfig(InferenceConfiguration.builder()
-                                    .maxTokens(Integer.valueOf(maxResponseToken))
-                                    .temperature(0f)
-                                    .topP(0f)
-                                    .build())
-                    .build();
-            
-            try {
-                ConverseResponse converseResponse = bedrockRuntimeClient.converse(converseRequest);
-                response = converseResponse.output().message().content().getFirst().text();
-                logger.log("Processed " + extractedImages.size() + " images in a single request");
-            } catch (Exception e) {
-                logger.log("Error processing images with Bedrock: " + e.getMessage());
-                response = "{}";
-            }
-            
-        } else if (document) {
-            // Process document normally
             List<ContentBlock> contentBlocks = new ArrayList<>();
             
             // Add text content block
@@ -377,16 +477,29 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
                 finalMap.put("isPdf", AttributeValue.builder().bool(true).build());
                 finalMap.put("containsImages", AttributeValue.builder().bool(containsImages).build());
                 
-                // Record if we used extracted images for processing
-                boolean usedExtractedImages = isPdf && containsImages && !extractedImages.isEmpty();
-                finalMap.put("usedExtractedImages", AttributeValue.builder().bool(usedExtractedImages).build());
-                
-                // Record the number of images extracted
-                finalMap.put("imageCount", AttributeValue.builder().n(String.valueOf(extractedImages.size())).build());
-                
-                // Record image format used
-                if (usedExtractedImages) {
-                    finalMap.put("imageFormat", AttributeValue.builder().s("JPEG").build());
+                if (containsImages && !classifiedImages.isEmpty()) {
+                    // Count different image types
+                    long logoCount = classifiedImages.stream().filter(img -> "logo".equals(img.getImageType())).count();
+                    long documentCount = classifiedImages.stream().filter(img -> "scanned_document".equals(img.getImageType())).count();
+                    
+                    finalMap.put("totalImageCount", AttributeValue.builder().n(String.valueOf(classifiedImages.size())).build());
+                    finalMap.put("logoImageCount", AttributeValue.builder().n(String.valueOf(logoCount)).build());
+                    finalMap.put("documentImageCount", AttributeValue.builder().n(String.valueOf(documentCount)).build());
+                    
+                    // Record processing method
+                    boolean usedExtractedImages = documentCount > 0;
+                    boolean processedAsDocument = documentCount == 0; // Only logos, processed as document
+                    
+                    finalMap.put("usedExtractedImages", AttributeValue.builder().bool(usedExtractedImages).build());
+                    finalMap.put("processedAsDocument", AttributeValue.builder().bool(processedAsDocument).build());
+                    finalMap.put("processedImageCount", AttributeValue.builder().n(String.valueOf(documentCount)).build());
+                    
+                    if (usedExtractedImages) {
+                        finalMap.put("imageFormat", AttributeValue.builder().s("JPEG").build());
+                    }
+                } else {
+                    finalMap.put("totalImageCount", AttributeValue.builder().n("0").build());
+                    finalMap.put("usedExtractedImages", AttributeValue.builder().bool(false).build());
                 }
             } else {
                 finalMap.put("isPdf", AttributeValue.builder().bool(false).build());
