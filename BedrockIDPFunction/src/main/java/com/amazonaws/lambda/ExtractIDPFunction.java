@@ -44,15 +44,19 @@ import java.io.IOException;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 
+/**
+ * Lambda function that processes documents and images using Amazon Bedrock.
+ * This function can handle PDF documents, extracting images from them if present,
+ * and sending them to Bedrock for processing. It can also handle regular documents
+ * and images directly.
+ * 
+ * The function stores the results in both S3 and DynamoDB for further processing.
+ */
 public class ExtractIDPFunction implements RequestHandler<Object, String> {
     private static final ObjectMapper objectMapper = new ObjectMapper();
 
-    // AWS Services Client
     private final BedrockRuntimeClient bedrockRuntimeClient = BedrockRuntimeClient.builder()
                                                                                   .httpClientBuilder(ApacheHttpClient.builder()
                                                                                                                      .connectionTimeout(Duration.ofSeconds(30))
@@ -62,7 +66,6 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
     private final DynamoDbClient dynamoDbClient = DynamoDbClient.builder().build();
     private final SsmClient ssmClient = SsmClient.builder().build();
 
-    // AWS Lambda Env Variables
     private final String modelID = Optional.ofNullable(System.getenv("Model_ID")).orElse("anthropic.claude-3-5-sonnet-20241022-v2:0");
     private final String sourceS3Bucket = System.getenv("Source_S3_Bucket");
     private final String outputS3Bucket = System.getenv("Output_S3_Bucket");
@@ -73,19 +76,28 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
     private String defaultUserPrompt = "Extract the fields as JSON document, no other filler words, newline character are required in the output";
     private String defaultSystemPrompt = "Your response should be in JSON format.\\n Do not include any explanations, only provide a RFC8259 compliant JSON response without deviation.\\n Do not include markdown code blocks in your response.\\n";
 
+    /**
+     * Sanitizes a document name by removing special characters and normalizing whitespace.
+     * 
+     * @param name The document name to sanitize
+     * @return The sanitized document name
+     */
     private String sanitizeDocumentName(String name) {
         return name.replaceAll("[^a-zA-Z0-9\\s\\-()\\[\\]]", "")
                    .replaceAll("\\s+", " ")
                    .trim();
     }
+    
+
 
     /**
-     * Extracts the first image from a PDF document as PNG bytes.
+     * Extracts all images from a PDF document as JPEG bytes.
      *
      * @param pdfBytes The PDF document as a byte array
-     * @return byte array of the first image as PNG, or null if no images found
+     * @return List of byte arrays containing images as JPEG, or empty list if no images found
      */
-    private byte[] extractFirstImageFromPdf(byte[] pdfBytes) {
+    private List<byte[]> extractImagesFromPdf(byte[] pdfBytes) {
+        List<byte[]> images = new ArrayList<>();
         try (PDDocument document = Loader.loadPDF(pdfBytes)) {
             for (PDPage page : document.getPages()) {
                 PDResources resources = page.getResources();
@@ -97,18 +109,27 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
                         PDImageXObject image = (PDImageXObject) xObject;
                         BufferedImage bufferedImage = image.getImage();
                         ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                        ImageIO.write(bufferedImage, "PNG", baos);
-                        return baos.toByteArray();
+                        ImageIO.write(bufferedImage, "JPEG", baos);
+                        images.add(baos.toByteArray());
                     }
                 }
             }
-            return null; // No images found
         } catch (IOException e) {
-            System.err.println("Error extracting image from PDF: " + e.getMessage());
-            return null;
+            System.err.println("Error extracting images from PDF: " + e.getMessage());
         }
+        return images;
     }
 
+    /**
+     * Handles the Lambda function request. This method processes documents and images using Amazon Bedrock.
+     * For PDF documents with images, it extracts the images and sends them to Bedrock as JPEG images.
+     * For regular documents, it sends them directly to Bedrock.
+     * For regular images, it sends them directly to Bedrock.
+     * 
+     * @param event The Lambda function input event (S3 event or StepFunction event)
+     * @param context The Lambda execution context
+     * @return The JSON response from Amazon Bedrock
+     */
     @Override
     public String handleRequest(Object event, Context context) {
         LambdaLogger logger = context.getLogger();
@@ -174,13 +195,14 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
         // Check whether it's a PDF document and whether it contains images
         boolean isPdf = s3ContentType.contains("pdf");
         boolean containsImages = false; // Will be used later when storing to DynamoDB
-        byte[] extractedImageBytes = null; // Store extracted image bytes for later use
+        List<byte[]> extractedImages = new ArrayList<>(); // Store extracted image bytes for later use
 
         if (isPdf) {
             byte[] pdfBytes = s3SDKBytes.asByteArray();
-            extractedImageBytes = extractFirstImageFromPdf(pdfBytes);
-            containsImages = extractedImageBytes != null;
+            extractedImages = extractImagesFromPdf(pdfBytes);
+            containsImages = !extractedImages.isEmpty();
             logger.log("PDF Contains Images = " + containsImages);
+            logger.log("Number of images found: " + extractedImages.size());
             logger.log("\n");
         }
 
@@ -195,21 +217,71 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
         }
 
         String baseName = sanitizeDocumentName(FilenameUtils.getBaseName(s3Key));
-        ContentBlock contentBlock;
         
-        // If it's a PDF with images, use the extracted image instead of the document
+        // Process based on content type
         if (isPdf && containsImages) {
-            logger.log("Using extracted image from PDF");
-            contentBlock = ContentBlock.builder()
-                    .image(ImageBlock.builder()
-                            .format(ImageFormat.PNG)
-                            .source(ImageSource.builder()
-                                    .bytes(SdkBytes.fromByteArray(extractedImageBytes))
+            logger.log("Processing PDF with images in a single request");
+            logger.log("\n");
+            
+            // Create content blocks with all images
+            List<ContentBlock> contentBlocks = new ArrayList<>();
+            
+            // Add text content block first
+            contentBlocks.add(ContentBlock.builder()
+                    .text(defaultUserPrompt)
+                    .build());
+            
+            // Add each image as a separate content block
+            for (int i = 0; i < extractedImages.size(); i++) {
+                byte[] imageBytes = extractedImages.get(i);
+                contentBlocks.add(ContentBlock.builder()
+                        .image(ImageBlock.builder()
+                                .format(ImageFormat.JPEG)
+                                .source(ImageSource.builder()
+                                        .bytes(SdkBytes.fromByteArray(imageBytes))
+                                        .build())
+                                .build())
+                        .build());
+            }
+            
+            // Create and send the request with all images
+            ConverseRequest converseRequest = ConverseRequest.builder()
+                    .modelId(modelID)
+                    .messages(
+                            Message.builder()
+                                    .role(ConversationRole.USER)
+                                    .content(contentBlocks.toArray(new ContentBlock[0]))
                                     .build())
+                    .system(SystemContentBlock.builder()
+                            .text(defaultSystemPrompt)
                             .build())
+                    .inferenceConfig(InferenceConfiguration.builder()
+                                    .maxTokens(Integer.valueOf(maxResponseToken))
+                                    .temperature(0f)
+                                    .topP(0f)
+                                    .build())
                     .build();
+            
+            try {
+                ConverseResponse converseResponse = bedrockRuntimeClient.converse(converseRequest);
+                response = converseResponse.output().message().content().getFirst().text();
+                logger.log("Processed " + extractedImages.size() + " images in a single request");
+            } catch (Exception e) {
+                logger.log("Error processing images with Bedrock: " + e.getMessage());
+                response = "{}";
+            }
+            
         } else if (document) {
-            contentBlock = ContentBlock.builder()
+            // Process document normally
+            List<ContentBlock> contentBlocks = new ArrayList<>();
+            
+            // Add text content block
+            contentBlocks.add(ContentBlock.builder()
+                    .text(defaultUserPrompt)
+                    .build());
+            
+            // Add document content block
+            contentBlocks.add(ContentBlock.builder()
                     .document(DocumentBlock.builder()
                             .name(baseName)
                             .format(DocumentFormat.PDF)
@@ -217,40 +289,67 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
                                     .bytes(s3SDKBytes)
                                     .build())
                             .build())
+                    .build());
+                    
+            ConverseRequest converseRequest = ConverseRequest.builder()
+                    .modelId(modelID)
+                    .messages(
+                            Message.builder()
+                                    .role(ConversationRole.USER)
+                                    .content(contentBlocks.toArray(new ContentBlock[0]))
+                                    .build())
+                    .system(SystemContentBlock.builder()
+                            .text(defaultSystemPrompt)
+                            .build())
+                    .inferenceConfig(InferenceConfiguration.builder()
+                                    .maxTokens(Integer.valueOf(maxResponseToken))
+                                    .temperature(0f)
+                                    .topP(0f)
+                                    .build())
                     .build();
+    
+            ConverseResponse converseResponse = bedrockRuntimeClient.converse(converseRequest);
+            response = converseResponse.output().message().content().getFirst().text();
+            
         } else {
-            contentBlock = ContentBlock.builder()
+            // Process single image normally
+            List<ContentBlock> contentBlocks = new ArrayList<>();
+            
+            // Add text content block
+            contentBlocks.add(ContentBlock.builder()
+                    .text(defaultUserPrompt)
+                    .build());
+            
+            // Add image content block
+            contentBlocks.add(ContentBlock.builder()
                     .image(ImageBlock.builder()
-                            .format(ImageFormat.PNG)
+                            .format(ImageFormat.JPEG)
                             .source(ImageSource.builder()
                                     .bytes(s3SDKBytes)
                                     .build())
                             .build())
+                    .build());
+                    
+            ConverseRequest converseRequest = ConverseRequest.builder()
+                    .modelId(modelID)
+                    .messages(
+                            Message.builder()
+                                    .role(ConversationRole.USER)
+                                    .content(contentBlocks.toArray(new ContentBlock[0]))
+                                    .build())
+                    .system(SystemContentBlock.builder()
+                            .text(defaultSystemPrompt)
+                            .build())
+                    .inferenceConfig(InferenceConfiguration.builder()
+                                    .maxTokens(Integer.valueOf(maxResponseToken))
+                                    .temperature(0f)
+                                    .topP(0f)
+                                    .build())
                     .build();
+    
+            ConverseResponse converseResponse = bedrockRuntimeClient.converse(converseRequest);
+            response = converseResponse.output().message().content().getFirst().text();
         }
-
-        ConverseRequest converseRequest = ConverseRequest.builder()
-                .modelId(modelID)
-                .messages(
-                        Message.builder()
-                                .role(ConversationRole.USER)
-                                .content(ContentBlock.builder()
-                                        .text(defaultUserPrompt)
-                                        .build(), contentBlock)
-                                .build())
-                .system(SystemContentBlock.builder()
-                        .text(defaultSystemPrompt)
-                        .build())
-                .inferenceConfig(InferenceConfiguration.builder()
-                                                       .maxTokens(Integer.valueOf(maxResponseToken))
-                                                       .temperature(0f)
-                                                       .topP(0f)
-                                                       .build())
-                .build();
-
-        ConverseResponse converseResponse = bedrockRuntimeClient.converse(converseRequest);
-
-        response = converseResponse.output().message().content().getFirst().text();
 
         System.out.println("response = " + response);
 
@@ -278,9 +377,17 @@ public class ExtractIDPFunction implements RequestHandler<Object, String> {
                 finalMap.put("isPdf", AttributeValue.builder().bool(true).build());
                 finalMap.put("containsImages", AttributeValue.builder().bool(containsImages).build());
                 
-                // Record if we used an extracted image for processing
-                boolean usedExtractedImage = isPdf && containsImages && extractedImageBytes != null;
-                finalMap.put("usedExtractedImage", AttributeValue.builder().bool(usedExtractedImage).build());
+                // Record if we used extracted images for processing
+                boolean usedExtractedImages = isPdf && containsImages && !extractedImages.isEmpty();
+                finalMap.put("usedExtractedImages", AttributeValue.builder().bool(usedExtractedImages).build());
+                
+                // Record the number of images extracted
+                finalMap.put("imageCount", AttributeValue.builder().n(String.valueOf(extractedImages.size())).build());
+                
+                // Record image format used
+                if (usedExtractedImages) {
+                    finalMap.put("imageFormat", AttributeValue.builder().s("JPEG").build());
+                }
             } else {
                 finalMap.put("isPdf", AttributeValue.builder().bool(false).build());
             }
